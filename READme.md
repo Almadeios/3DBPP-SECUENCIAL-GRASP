@@ -27,3 +27,9 @@ python run_experiments_blockout.py
 ```
 https://drive.google.com/drive/folders/1TibQqFfzugui1gBI_wIcW6H6CzF_cIwj
 ```
+
+
+
+AÑADIR PARALELISMO
+
+ADEMAS EXTENDER EL GRASP ITERATIONS PERO DETENERLO SI X VECES LOS RESULTADOS NO SON SIGNIFICATIVAMENTE MEJORES.
