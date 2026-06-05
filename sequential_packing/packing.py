@@ -1,6 +1,7 @@
 import os
 import random
 import time
+import concurrent.futures
 
 import numpy as np
 from trimesh.collision import CollisionManager
@@ -10,7 +11,8 @@ from .mesh import load_mesh_cached, normalize_shape_path
 from .progress import SilentProgress, tqdm
 
 
-def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progress=True, initial_state=None):
+def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progress=True, initial_state=None, rng=None, include_state=True):
+    rng = rng or random
     if initial_state is not None:
         placed = list(initial_state.get("placements", []))
         scene = initial_state["scene"]
@@ -60,7 +62,7 @@ def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progre
             cand = best_feasible_position_with_drop_and_stableposes(item, scene, current_height, heightmap, stable_pose_cache, config)
             if cand is not None:
                 base_score = cand["score"][0] if isinstance(cand["score"], tuple) else cand["score"]
-                candidate_entries.append((base_score, random.random(), j, cand))
+                candidate_entries.append((base_score, rng.random(), j, cand))
 
         if not candidate_entries:
             item = buffer.pop(0)
@@ -71,7 +73,7 @@ def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progre
 
         if config.grasp_iterations and config.rcl_size_effective > 0:
             candidate_entries.sort(key=lambda x: x[0][0] if isinstance(x[0], tuple) else x[0])
-            alpha = random.uniform(0.1, 0.5)
+            alpha = rng.uniform(0.1, 0.5)
             scores = [c[0][0] if isinstance(c[0], tuple) else c[0] for c in candidate_entries]
             s_min = scores[0]
             s_max = scores[-1]
@@ -79,7 +81,7 @@ def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progre
             rcl = [c for c in candidate_entries if (c[0][0] if isinstance(c[0], tuple) else c[0]) <= threshold]
             if not rcl:
                 rcl = candidate_entries[: config.rcl_size_effective]
-            chosen = random.choice(rcl)
+            chosen = rng.choice(rcl)
             _, _, j, best_data = chosen
         else:
             candidate_entries.sort(key=lambda x: x[0][0] if isinstance(x[0], tuple) else x[0])
@@ -121,7 +123,7 @@ def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progre
     remaining_sequence = [item["name"] for item in buffer] + sequence_ids[idx:]
     elapsed = time.perf_counter() - start_time
     fill_percent = (volumen_usado / volumen_total * 100.0) if volumen_total > 0 else 0.0
-    return {
+    result = {
         "placements": placed,
         "volume_total": volumen_total,
         "volume_used": volumen_usado,
@@ -130,15 +132,17 @@ def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progre
         "elapsed": elapsed,
         "order": list(sequence_ids),
         "remaining": remaining_sequence,
-        "state": {
+    }
+    if include_state:
+        result["state"] = {
             "placements": placed,
             "scene": scene,
             "heightmap": heightmap,
             "volumen_usado": volumen_usado,
             "current_height": current_height,
             "volumen_total": volumen_total,
-        },
-    }
+        }
+    return result
 
 
 def better_result(candidate, current):
@@ -150,14 +154,15 @@ def better_result(candidate, current):
     obj_score_curr = current["placed_count"] / max_objects
     vol_score_cand = candidate["fill_percent"] / 100.0
     vol_score_curr = current["fill_percent"] / 100.0
-    alpha = 0.6
-    beta = 0.4
+    # Prefer fill_percent slightly more than number of pieces (but not by much)
+    alpha = 0.45
+    beta = 0.55
     score_cand = alpha * obj_score_cand + beta * vol_score_cand
     score_curr = alpha * obj_score_curr + beta * vol_score_curr
     return score_cand > score_curr
 
 
-def run_with_passes(order, config, mesh_cache, stable_pose_cache, show_first_pass=True):
+def run_with_passes(order, config, mesh_cache, stable_pose_cache, show_first_pass=True, rng=None, include_state=True):
     remaining_sequence = list(order)
     state = None
     best_result_local = None
@@ -172,35 +177,89 @@ def run_with_passes(order, config, mesh_cache, stable_pose_cache, show_first_pas
             stable_pose_cache,
             show_progress=show,
             initial_state=state,
+            rng=rng,
+            include_state=include_state,
         )
         best_result_local = result
-        state = result["state"]
+        state = result.get("state")
         remaining_sequence = result["remaining"]
         if not remaining_sequence:
             break
     return best_result_local
 
 
+def solve_order_worker(order, config, iter_idx, seed):
+    rng = random.Random(seed)
+    candidate = run_with_passes(
+        order,
+        config,
+        {},
+        {},
+        show_first_pass=False,
+        rng=rng,
+        include_state=False,
+    )
+    return iter_idx, candidate
+
+
 def solve_order(order, config, mesh_cache, stable_pose_cache, show_first_pass=True):
     best_result_local = None
     iterations = max(1, config.grasp_iterations)
     grasp_iterations = []
-    for iter_idx in range(iterations):
-        iter_start = time.perf_counter()
-        show = show_first_pass and iter_idx == 0
-        candidate = run_with_passes(order, config, mesh_cache, stable_pose_cache, show_first_pass=show)
-        iter_elapsed = time.perf_counter() - iter_start
-        grasp_iterations.append([
-            iter_elapsed,  # total_time
-            candidate["placed_count"],  # placed
-            candidate["fill_percent"]  # fill_percent
-        ])
-        print(
-            f"GRASP iter {iter_idx + 1}/{iterations}: "
-            f"{candidate['placed_count']} piezas, {candidate['fill_percent']:.2f}%"
-        )
-        if better_result(candidate, best_result_local):
-            best_result_local = candidate
+
+    if config.grasp_workers > 1 and iterations > 1:
+        root_rng = random.Random(config.random_seed)
+        seeds = [root_rng.randint(0, 2**32 - 1) for _ in range(iterations)]
+        results = [None] * iterations
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=config.grasp_workers) as executor:
+            futures = {
+                executor.submit(solve_order_worker, order, config, iter_idx, seeds[iter_idx]): iter_idx
+                for iter_idx in range(iterations)
+            }
+            for future in concurrent.futures.as_completed(futures):
+                iter_idx, candidate = future.result()
+                results[iter_idx] = candidate
+
+        for iter_idx, candidate in enumerate(results):
+            iter_elapsed = candidate["elapsed"]
+            grasp_iterations.append([
+                iter_elapsed,
+                candidate["placed_count"],
+                candidate["fill_percent"],
+            ])
+            print(
+                f"GRASP iter {iter_idx + 1}/{iterations}: "
+                f"{candidate['placed_count']} piezas, {candidate['fill_percent']:.2f}%"
+            )
+            if better_result(candidate, best_result_local):
+                best_result_local = candidate
+    else:
+        rng = random.Random(config.random_seed)
+        for iter_idx in range(iterations):
+            iter_start = time.perf_counter()
+            show = show_first_pass and iter_idx == 0
+            candidate = run_with_passes(
+                order,
+                config,
+                mesh_cache,
+                stable_pose_cache,
+                show_first_pass=show,
+                rng=rng,
+            )
+            iter_elapsed = time.perf_counter() - iter_start
+            grasp_iterations.append([
+                iter_elapsed,
+                candidate["placed_count"],
+                candidate["fill_percent"],
+            ])
+            print(
+                f"GRASP iter {iter_idx + 1}/{iterations}: "
+                f"{candidate['placed_count']} piezas, {candidate['fill_percent']:.2f}%"
+            )
+            if better_result(candidate, best_result_local):
+                best_result_local = candidate
+
     if best_result_local is not None:
         best_result_local["grasp_iterations"] = grasp_iterations
     return best_result_local

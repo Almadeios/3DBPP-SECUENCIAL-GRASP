@@ -2,18 +2,18 @@ import itertools
 import subprocess
 import sys
 
-BUFFERS = [1,3,5,7,10]
-STEPS = [0.01, 0.02, 0.03, 0.04, 0.05]
+BUFFERS = [3,5,]
+STEPS = [0.03, 0.04, 0.05]
 
 
 def build_cmd(buffer_size, step):
     cmd = [
         sys.executable,
         "main.py",
-        "--dataset", "kitchen",
+        "--dataset", "abc",
         "--sequence-index", "3",
         "--restrict-rotations",
-        "--irregular-order",
+        "--regular-order",
         "--max-passes", "2",
         "--random-seed", "42",
     ]

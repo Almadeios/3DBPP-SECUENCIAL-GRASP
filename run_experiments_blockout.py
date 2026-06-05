@@ -2,8 +2,8 @@ import itertools
 import subprocess
 import sys
 
-BUFFERS = [1, 3, 5, 10]
-STEPS = [0.01, 0.02, 0.03]
+BUFFERS = [1,3,5,7,10]
+STEPS = [0.01, 0.02, 0.03, 0.04, 0.05]
 
 
 def build_cmd(buffer_size, step):
@@ -32,6 +32,7 @@ def build_cmd(buffer_size, step):
     cmd += [
         "--buffer-size", str(buffer_size),
         "--step", str(step),
+        "--grasp-workers", "4",
     ]
 
     return cmd

@@ -102,6 +102,12 @@ def parse_args():
         help="Numero de construcciones GRASP (>=1).",
     )
     parser.add_argument(
+        "--grasp-workers",
+        type=non_negative_int,
+        default=0,
+        help="Numero de trabajadores para ejecutar iteraciones GRASP en paralelo (0 automatico).",
+    )
+    parser.add_argument(
         "--rcl-size",
         type=positive_int,
         default=3,

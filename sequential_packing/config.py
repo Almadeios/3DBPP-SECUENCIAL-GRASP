@@ -19,6 +19,7 @@ class PackingConfig:
     irregular_order: bool
     max_passes: int
     grasp_iterations: int
+    grasp_workers: int
     rcl_size: int
     base_dir: str
     obj_dir: str
@@ -78,6 +79,11 @@ def build_config(args) -> PackingConfig:
         support_tol=0.5 * container_step,
         max_positions_per_variant=40,
         allow_stable_poses=not args.restrict_rotations,
+        grasp_workers=(
+            args.grasp_workers
+            if args.grasp_workers > 0
+            else max(1, min(os.cpu_count() or 1, args.grasp_iterations))
+        ),
         rcl_size_effective=max(1, args.rcl_size),
         nx=nx,
         ny=ny,
