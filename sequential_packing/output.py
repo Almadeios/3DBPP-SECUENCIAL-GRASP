@@ -17,6 +17,7 @@ def write_solution_files(placed, config, best_result, elapsed_total, mesh_cache)
     print(f"\nGuardado {len(placed)} objetos en {output_json}")
 
     meta_path = os.path.join(meta_dir, f"meta_{method_tag}_k{config.buffer_size}_{step_tag}.json")
+    cache_stats = best_result.get("placement_cache", {})
     metadata = {
         "dataset": config.dataset,
         "buffer_size": config.buffer_size,
@@ -38,6 +39,9 @@ def write_solution_files(placed, config, best_result, elapsed_total, mesh_cache)
         "elapsed_total": elapsed_total,
         "elapsed": elapsed_total,
         "output_json": os.path.relpath(output_json, start=config.results_dir),
+        "placement_cache_requests": cache_stats.get("cache_requests", 0),
+        "placement_cache_hits": cache_stats.get("cache_hits", 0),
+        "placement_cache_misses": cache_stats.get("cache_misses", 0),
     }
 
     with open(meta_path, "w", encoding="utf-8") as meta_file:
@@ -55,3 +59,14 @@ def write_solution_files(placed, config, best_result, elapsed_total, mesh_cache)
     print(f"Volumen contenedor: {best_result['volume_total']:.6f} m³")
     print(f"Volumen usado:     {volumen_usado_chk:.6f} m³")
     print(f"Porcentaje lleno:  {(volumen_usado_chk / best_result['volume_total']) * 100:.2f}%")
+
+    if cache_stats.get("cache_requests", 0) > 0:
+        hit_rate = (
+            cache_stats["cache_hits"] / cache_stats["cache_requests"] * 100.0
+            if cache_stats["cache_requests"] else 0.0
+        )
+        print(
+            f"Cache placement: {cache_stats['cache_hits']} hits, "
+            f"{cache_stats['cache_misses']} misses, "
+            f"{cache_stats['cache_requests']} reqs ({hit_rate:.1f}% hit)"
+        )

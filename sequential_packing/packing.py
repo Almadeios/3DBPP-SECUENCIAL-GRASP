@@ -2,17 +2,104 @@ import os
 import random
 import time
 import concurrent.futures
+import hashlib
+from collections import OrderedDict
 
 import numpy as np
 from trimesh.collision import CollisionManager
 
-from .heightmap import best_feasible_position_with_drop_and_stableposes, carve_cavity, is_concave_container
-from .mesh import load_mesh_cached, normalize_shape_path
+from .heightmap import (
+    best_feasible_position_with_drop_and_stableposes,
+    carve_cavity,
+    compute_lz_and_support,
+    is_concave_container,
+)
+from .mesh import aabb_inside_container, load_mesh_cached, normalize_shape_path
 from .progress import SilentProgress, tqdm
 
+PLACEMENT_CACHE_SIZE = 2000
 
-def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progress=True, initial_state=None, rng=None, include_state=True):
+
+class LRUCache:
+    def __init__(self, max_size=PLACEMENT_CACHE_SIZE):
+        self.max_size = max_size
+        self._data = OrderedDict()
+        self.hits = 0
+        self.misses = 0
+        self.requests = 0
+
+    def get(self, key):
+        self.requests += 1
+        try:
+            value = self._data.pop(key)
+            self._data[key] = value
+            self.hits += 1
+            return value
+        except KeyError:
+            self.misses += 1
+            return None
+
+    def set(self, key, value):
+        if key in self._data:
+            self._data.pop(key)
+        self._data[key] = value
+        if len(self._data) > self.max_size:
+            self._data.popitem(last=False)
+
+    def stats(self):
+        return {
+            "cache_requests": self.requests,
+            "cache_hits": self.hits,
+            "cache_misses": self.misses,
+            "cache_size": len(self._data),
+        }
+
+
+def make_placement_cache_key(item_name, current_height, heightmap, ds=8, decimals=1):
+    # Use a coarser heightmap fingerprint to detect similar packing states
+    # without requiring exact equality of every small height variation.
+    sampled = np.round(heightmap[::ds, ::ds], decimals=decimals)
+    fingerprint = hashlib.sha1(sampled.tobytes()).hexdigest()
+    return (
+        item_name,
+        round(current_height, 2),
+        fingerprint,
+    )
+
+
+def validate_cached_candidate(candidate, scene, current_height, heightmap, config):
+    variant = candidate["variant"]
+    translation = candidate["translation"]
+    bounds = variant["bounds"]
+    mesh_oriented = variant["mesh"]
+
+    if not aabb_inside_container(bounds, translation, config.container_dims, config.eps):
+        return False
+
+    tf = np.eye(4)
+    tf[:3, 3] = translation
+    if scene.in_collision_single(mesh_oriented, transform=tf):
+        return False
+
+    xmin = translation[0] + variant["offset"][0]
+    ymin = translation[1] + variant["offset"][1]
+    xmax = xmin + variant["size"][0]
+    ymax = ymin + variant["size"][1]
+    lz, support_frac, patch, idx_data = compute_lz_and_support(heightmap, xmin, xmax, ymin, ymax, config)
+    if support_frac < config.min_support_frac:
+        return False
+
+    expected_z = lz + config.eps - variant["offset"][2]
+    if abs(expected_z - translation[2]) > config.eps * 10:
+        return False
+
+    return True
+
+
+def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progress=True, initial_state=None, rng=None, include_state=True, placement_cache=None):
     rng = rng or random
+    if placement_cache is None:
+        placement_cache = LRUCache()
     if initial_state is not None:
         placed = list(initial_state.get("placements", []))
         scene = initial_state["scene"]
@@ -59,7 +146,18 @@ def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progre
         )
 
         for j, item in buffer_sorted:
-            cand = best_feasible_position_with_drop_and_stableposes(item, scene, current_height, heightmap, stable_pose_cache, config)
+            key = make_placement_cache_key(item["name"], current_height, heightmap)
+            cand = placement_cache.get(key)
+            if cand is not None:
+                if not validate_cached_candidate(cand, scene, current_height, heightmap, config):
+                    placement_cache.hits = max(placement_cache.hits - 1, 0)
+                    placement_cache.misses += 1
+                    placement_cache._data.pop(key, None)
+                    cand = None
+            if cand is None:
+                cand = best_feasible_position_with_drop_and_stableposes(item, scene, current_height, heightmap, stable_pose_cache, config)
+                if cand is not None:
+                    placement_cache.set(key, cand)
             if cand is not None:
                 base_score = cand["score"][0] if isinstance(cand["score"], tuple) else cand["score"]
                 candidate_entries.append((base_score, rng.random(), j, cand))
@@ -132,6 +230,7 @@ def run_packing(sequence_ids, config, mesh_cache, stable_pose_cache, show_progre
         "elapsed": elapsed,
         "order": list(sequence_ids),
         "remaining": remaining_sequence,
+        "placement_cache": placement_cache.stats(),
     }
     if include_state:
         result["state"] = {
@@ -162,7 +261,7 @@ def better_result(candidate, current):
     return score_cand > score_curr
 
 
-def run_with_passes(order, config, mesh_cache, stable_pose_cache, show_first_pass=True, rng=None, include_state=True):
+def run_with_passes(order, config, mesh_cache, stable_pose_cache, show_first_pass=True, rng=None, include_state=True, placement_cache=None):
     remaining_sequence = list(order)
     state = None
     best_result_local = None
@@ -179,6 +278,7 @@ def run_with_passes(order, config, mesh_cache, stable_pose_cache, show_first_pas
             initial_state=state,
             rng=rng,
             include_state=include_state,
+            placement_cache=placement_cache,
         )
         best_result_local = result
         state = result.get("state")
@@ -190,6 +290,7 @@ def run_with_passes(order, config, mesh_cache, stable_pose_cache, show_first_pas
 
 def solve_order_worker(order, config, iter_idx, seed):
     rng = random.Random(seed)
+    placement_cache = LRUCache()
     candidate = run_with_passes(
         order,
         config,
@@ -198,6 +299,7 @@ def solve_order_worker(order, config, iter_idx, seed):
         show_first_pass=False,
         rng=rng,
         include_state=False,
+        placement_cache=placement_cache,
     )
     return iter_idx, candidate
 
@@ -236,6 +338,7 @@ def solve_order(order, config, mesh_cache, stable_pose_cache, show_first_pass=Tr
                 best_result_local = candidate
     else:
         rng = random.Random(config.random_seed)
+        placement_cache = LRUCache()
         for iter_idx in range(iterations):
             iter_start = time.perf_counter()
             show = show_first_pass and iter_idx == 0
@@ -246,6 +349,7 @@ def solve_order(order, config, mesh_cache, stable_pose_cache, show_first_pass=Tr
                 stable_pose_cache,
                 show_first_pass=show,
                 rng=rng,
+                placement_cache=placement_cache,
             )
             iter_elapsed = time.perf_counter() - iter_start
             grasp_iterations.append([

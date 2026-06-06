@@ -78,7 +78,7 @@ def plot_metric_heatmap(df, value_col, title, filename, cmap="viridis_r"):
 
         pivot = (
             subset.groupby(["step", "k"])[value_col]
-            .mean()
+            .first()
             .unstack("k")
         )
         pivot = pivot.reindex(index=sorted(pivot.index), columns=sorted(pivot.columns))
@@ -156,7 +156,7 @@ def plot_pareto_frontier(df):
 
     ax.set_title("Pareto Frontier: Fill vs Runtime")
     ax.set_xlabel("Mean Runtime (s)")
-    ax.set_ylabel("Mean Fill Percentage")
+    ax.set_ylabel("Fill Percentage")
     ax.grid(alpha=0.3)
     ax.legend()
     plt.tight_layout()
@@ -380,7 +380,7 @@ def plot_fill_vs_step(df, k_order, step_order):
             ax.scatter(x, y, s=80, zorder=3)
         ax.set_title(f"{dataset.capitalize()}: Fill vs Step")
         ax.set_xlabel("Step Size")
-        ax.set_ylabel("Mean Fill Percentage")
+        ax.set_ylabel("Fill Percentage")
         ax.grid(alpha=0.3)
         ax.legend()
     plt.tight_layout()
@@ -424,7 +424,7 @@ def plot_fill_vs_runtime(df):
         ax.scatter(x, y, s=100, alpha=0.8, marker=markers[dataset])
     ax.set_title("Fill vs Runtime Tradeoff")
     ax.set_xlabel("Runtime (s)")
-    ax.set_ylabel("Mean Fill Percentage")
+    ax.set_ylabel("Fill Percentage")
     ax.grid(alpha=0.3)
     ax.legend()
     plt.tight_layout()
@@ -449,7 +449,7 @@ def plot_convergence(grasp_df, step_order):
             ax.fill_between(x, y - y_std, y + y_std, alpha=0.2)
         ax.set_title(f"{dataset.capitalize()}: GRASP Convergence")
         ax.set_xlabel("GRASP Iteration")
-        ax.set_ylabel("Mean Fill Percentage")
+        ax.set_ylabel("Fill Percentage")
         ax.grid(alpha=0.3)
         ax.legend()
     plt.tight_layout()
@@ -550,8 +550,8 @@ def main():
     plot_runtime_vs_k(df, k_order, step_order)
     plot_convergence(grasp_df, step_order)
     plot_objects_vs_step(df, k_order, step_order)
-    plot_metric_heatmap(df, "fill_percent", "Mean Fill Percent Heatmap", "fill_heatmap")
-    plot_metric_heatmap(df, "elapsed_total", "Mean Runtime Heatmap", "runtime_heatmap")
+    plot_metric_heatmap(df, "fill_percent", "Fill Percent Heatmap", "fill_heatmap")
+    plot_metric_heatmap(df, "elapsed_total", "Runtime Heatmap", "runtime_heatmap")
     plot_placed_heatmap(df)
 
     print("\nDONE.")

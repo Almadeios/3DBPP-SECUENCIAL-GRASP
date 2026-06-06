@@ -32,7 +32,7 @@ def build_cmd(buffer_size, step):
     cmd += [
         "--buffer-size", str(buffer_size),
         "--step", str(step),
-        "--grasp-workers", "4",
+        "--grasp-workers", "6",
     ]
 
     return cmd
