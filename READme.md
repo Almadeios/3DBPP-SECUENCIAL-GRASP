@@ -1,6 +1,6 @@
 # Procedimiento para usar el programa 
  * Crear un enviroment Python 3.11.6
- * .\.venv\Scripts\activate (en terminal)
+ * .\.venv\Scripts\activate (en terminal, de ocurrir un error "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass")
  * pip install -r requirements.txt (ejecutar una ves dentro del enviroment)
 
 # Ejecución principal (empaque secuencial mejorado)

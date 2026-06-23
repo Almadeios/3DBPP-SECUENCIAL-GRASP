@@ -1,4 +1,3 @@
-# vista_ga.py
 import argparse
 import json
 import os
